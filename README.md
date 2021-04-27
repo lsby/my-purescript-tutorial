@@ -13,3 +13,7 @@
 发布方式:[Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/deed.zh)
 
 作者:[白羊](mailto:2451759073@qq.com)
+
+## 完成度
+
+目前只完成了基础语法的讲解, 后续内容还会写的...(大概吧
