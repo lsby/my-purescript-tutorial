@@ -17,6 +17,7 @@ spago build
 spago bundle-app
 ```
 
+- 会生成一个叫`index.js`的文件
 - 可以直接运行
 - 会自动处理依赖关系
 
@@ -26,7 +27,9 @@ spago bundle-app
 spago bundle-module
 ```
 
-- 会暴露Main模块指定的内容
+- 会生成一个叫`index.js`的文件
+- 会导出Main模块指定的内容
+- 是使用`commonJS`规范导出的
 - 会自动处理依赖关系
 
 ## PureScript调用js
