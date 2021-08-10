@@ -230,7 +230,7 @@ main = do
 
 ## 写monad
 
-这么模块: [Control.Monad.Writer - purescript-transformers - Pursuit](https://pursuit.purescript.org/packages/purescript-transformers/5.1.0/docs/Control.Monad.Writer#t:Writer).
+这个模块: [Control.Monad.Writer - purescript-transformers - Pursuit](https://pursuit.purescript.org/packages/purescript-transformers/5.1.0/docs/Control.Monad.Writer#t:Writer).
 
 写monad有两个值, 一个累加值w和一个结果值a.
 
@@ -361,6 +361,131 @@ main = do
 
 状态monad可以合并, 合并后他们就共享一个状态, 可以用get获取状态, modify修改状态之类的.
 
-## 单子转换
+## 单子转换器
 
-// todo
+以状态单子做例子, 有一个类型是`StateT`, 它是`State`的扩展.
+
+它的完整类型是`StateT s m a`, s是状态类型, m是结果包裹, a是结果.
+
+一个例子:
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.Cont (lift)
+import Control.Monad.State (StateT)
+import Control.Monad.State.Trans (get, put, runStateT)
+import Data.Maybe (Maybe(..))
+import Effect (Effect)
+import Effect.Console (log)
+
+val1 :: StateT String Maybe Int
+val1 = do
+  s <- get
+  put "nihao"
+  case s of
+    "" -> lift $ Nothing
+    _ -> lift $ Just 1
+
+main :: Effect Unit
+main = do
+  log $ show $ runStateT val1 "" -- 得到 Nothing
+  log $ show $ runStateT val1 "abc" -- 得到 (Just (Tuple 1 "nihao"))
+```
+
+对于`StateT s m a`(这里是`StateT String Maybe Int`), 当runStateT时, 会得到`m (Tuple a s)`, 这里就是`Maybe (Tuple Int String)`. 
+
+当然也有对应的execStateT, evalStateT.
+
+你依然可以使用get等函数操作状态, 状态的类型是s, 这里是String.
+
+而注意到, 整个计算的结果是`包装类型 (Tuple 结果类型 状态类型)`. 就是说把结果做了一层包装.
+
+相对的, 在返回结果的时候, 就不能单写`m a`类型(这里是`Maybe Int`类型)的值, 需要多一层lift.
+
+这个lift在`MonadTrans`中定义, 将`m a`包装成`t m a`. 在这里就是把`Maybe Int`包装为`StateT String Maybe Int`.
+
+事实上, `State s a`的就是`StateT s Identity a`. 是StateT的一种特殊形式.
+
+那么如果把两个`StateT String Maybe Int`组合呢? 
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.Cont (lift)
+import Control.Monad.State (StateT)
+import Control.Monad.State.Trans (get, put, runStateT)
+import Data.Maybe (Maybe(..))
+import Effect (Effect)
+import Effect.Console (log)
+
+val1 :: StateT String Maybe Int
+val1 = do
+  put "a"
+  lift $ Just 1
+
+val2 :: StateT String Maybe Int
+val2 = do
+  s <- get
+  put $ s <> "b"
+  lift $ Just 2
+
+main :: Effect Unit
+main = do
+  log $ show $ runStateT (do
+    _ <- val1
+    val2
+  ) ""
+-- 得到 (Just (Tuple 2 "ab"))
+-- 如果val1或val2返回lift Nothing, 则结果为Nothing.
+```
+
+StateT就是把状态monad和一个输入上下文合在一起, 那为什么要这么做呢? 因为这样可以方便组合.
+
+改写上面组合的示例, 如果我不使用StateT, 而使用State:
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.State (State, get, runState)
+import Control.Monad.State.Trans (put)
+import Data.Maybe (Maybe(..))
+import Effect (Effect)
+import Effect.Console (log)
+
+val1 :: State String (Maybe Int)
+val1 = do
+  put "a"
+  pure $ Just 1
+
+val2 :: State String (Maybe Int)
+val2 = do
+  s <- get
+  put $ s <> "b"
+  pure $ Just 2
+
+main :: Effect Unit
+main = do
+  log $ show $ runState (do
+    _ <- val1
+    val2
+  ) ""
+-- 得到 (Tuple (Just 2) "ab")
+```
+
+虽然上下文的顺序不同, 但更重要的是, 这里获得的结果永远是val2的结果, 即使val1返回Nothing, 也会得到`(Tuple (Just 2) "ab")`而不是`Nothing`.
+
+StateT允许你在结果上套一层上下文, 一方面你可以正常的共享状态, 另一方面你又可以用给定的上下文对结果进行组合.
+
+而State的结果没有上下文, 只能共享状态, 结果是不会组合的, 结果值只会取最后一个计算的结果.
+
+## 异常转换器
+
+todo
+
