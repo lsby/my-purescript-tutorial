@@ -103,7 +103,7 @@ exceptionHead l = case l of
 
 但不推荐这样做, 推荐用Either,Maybe之类的管理错误.
 
-## 引用
+## STmonad
 
 在通常的编程语言里, 变量意味着一个内存地址, 对变量的操作意味着对该内存地址值的操作.
 
@@ -160,5 +160,207 @@ fun = run (new 0)
 
 这就保证了内存引用不会共享, 保证了安全.
 
-// todo 也许后面还有
+## 读monad
 
+这个模块: [Control.Monad.Reader - purescript-transformers - Pursuit](https://pursuit.purescript.org/packages/purescript-transformers/5.1.0/docs/Control.Monad.Reader).
+
+读monad有两个参数, 一个是环境的值r, 一个是最后的返回值a.
+
+读monad允许你计算monad时传入一个"环境值", 这个值在读monad中全局可见.
+
+这是一个例子:
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.Reader (Reader, ask, runReader)
+import Effect (Effect)
+import Effect.Console (log)
+
+fun :: Reader { a :: Int } Int
+fun = do
+  x <- ask
+  pure $ x.a + 1 
+
+main :: Effect Unit
+main = do
+  log $ show $ runReader fun {a:1}
+```
+
+会得到2.
+
+在读monad中可以通过ask获得环境的值.
+
+最后通过runReader来计算, 另外还可以用withReader来改变环境值, 具体参考文档.
+
+如果合并两个读monad呢?
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.Reader (Reader, ask, runReader)
+import Effect (Effect)
+import Effect.Console (log)
+
+fun1 :: Reader { a :: Int } Int
+fun1 = do
+  x <- ask
+  pure $ x.a + 1
+
+fun2 :: Reader { a :: Int } Int
+fun2 = do
+  x <- ask
+  pure $ x.a + 2
+
+main :: Effect Unit
+main = do
+  log $ show $ runReader (do
+    _ <- fun1
+    fun2
+  ) {a:1}
+```
+
+会得到3.
+
+也就是合并没啥用, 会以后面那个为准.
+
+## 写monad
+
+这么模块: [Control.Monad.Writer - purescript-transformers - Pursuit](https://pursuit.purescript.org/packages/purescript-transformers/5.1.0/docs/Control.Monad.Writer#t:Writer).
+
+写monad有两个值, 一个累加值w和一个结果值a.
+
+在计算monad的时候, 会将所有累加值通过Monoid的接口合并.
+
+看一个例子:
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.Writer (Writer, runWriter, writer)
+import Data.Tuple (Tuple(..))
+import Effect (Effect)
+import Effect.Console (log)
+
+val1 :: Writer (Array String) Int
+val1 = writer $ Tuple 1 ["1"]
+
+main :: Effect Unit
+main = do
+  log $ show $ runWriter val1
+```
+
+会得到`(Tuple 1 ["1"])`.
+
+如果合并多个写monad:
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.Writer (Writer, runWriter, writer)
+import Data.Tuple (Tuple(..))
+import Effect (Effect)
+import Effect.Console (log)
+
+val1 :: Writer (Array String) Int
+val1 = writer $ Tuple 1 ["1"]
+
+val2 :: Writer (Array String) Int
+val2 = writer $ Tuple 2 ["2"]
+
+main :: Effect Unit
+main = do
+  log $ show $ runWriter (do
+    _ <- val1
+    val2
+  )
+```
+
+会得到`(Tuple 2 ["1","2"])`.
+
+runWriter是同时计算累加值和结果, 还有execWriter之类的只计算累加值, 丢弃结果.
+
+具体可以参考文档.
+
+## 状态monad
+
+这个模块: [Control.Monad.State - purescript-transformers - Pursuit](https://pursuit.purescript.org/packages/purescript-transformers/5.1.0/docs/Control.Monad.State).
+
+状态monad有两个值, 一个状态值s和一个结果值a.
+
+同时要操作状态monad内部的状态, 还需要这几个函数: [Control.Monad.State.Class - purescript-transformers - Pursuit](https://pursuit.purescript.org/packages/purescript-transformers/5.1.0/docs/Control.Monad.State.Class).
+
+看一个例子:
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.State (State, put, runState)
+import Effect (Effect)
+import Effect.Console (log)
+
+val1 :: State Int Int
+val1 = do
+  put 1
+  pure 1
+
+main :: Effect Unit
+main = do
+    log $ show $ runState val1 0
+```
+
+会得到`(Tuple 0 1)`.
+
+定义了一个状态monad, 它的状态类型是Int, 返回值是Int.
+
+put可以设置monad的状态.
+
+runState可以执行状态monad, 当然还有evalState, execState之类的可以丢弃状态或者值, 还有withState可以改变状态.
+
+再看这个例子:
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.RWS (get)
+import Control.Monad.State (State, put, runState)
+import Effect (Effect)
+import Effect.Console (log)
+
+val1 :: State Int Int
+val1 = do
+  put 1
+  pure 0
+
+val2 :: State Int Int
+val2 = do
+  a <- get
+  pure $ a + 1
+
+main :: Effect Unit
+main = do
+  log $ show $ runState (do
+    _ <- val1
+    val2
+  ) 0
+```
+
+会得到`(Tuple 2 1)`.
+
+状态monad可以合并, 合并后他们就共享一个状态, 可以用get获取状态, modify修改状态之类的.
+
+## 单子转换
+
+// todo
