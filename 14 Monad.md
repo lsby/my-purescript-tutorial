@@ -243,20 +243,20 @@ module Main where
 
 import Prelude
 
-import Control.Monad.Writer (Writer, runWriter, writer)
-import Data.Tuple (Tuple(..))
+import Control.Monad.Writer (Writer, runWriter)
+import Control.Monad.Writer.Class (tell)
 import Effect (Effect)
 import Effect.Console (log)
 
 val1 :: Writer (Array String) Int
-val1 = writer $ Tuple 1 ["1"]
+val1 = do
+  tell ["1"]
+  pure 1
 
 main :: Effect Unit
 main = do
-  log $ show $ runWriter val1
+  log $ show $ runWriter val1 -- 得到(Tuple 1 ["1"])
 ```
-
-会得到`(Tuple 1 ["1"])`.
 
 如果合并多个写monad:
 
@@ -265,16 +265,20 @@ module Main where
 
 import Prelude
 
-import Control.Monad.Writer (Writer, runWriter, writer)
-import Data.Tuple (Tuple(..))
+import Control.Monad.Writer (Writer, runWriter)
+import Control.Monad.Writer.Class (tell)
 import Effect (Effect)
 import Effect.Console (log)
 
 val1 :: Writer (Array String) Int
-val1 = writer $ Tuple 1 ["1"]
+val1 = do
+  tell ["1"]
+  pure 1
 
 val2 :: Writer (Array String) Int
-val2 = writer $ Tuple 2 ["2"]
+val2 = do
+  tell ["2"]
+  pure 2
 
 main :: Effect Unit
 main = do
@@ -282,9 +286,8 @@ main = do
     _ <- val1
     val2
   )
+-- 得到(Tuple 2 ["1","2"])
 ```
-
-会得到`(Tuple 2 ["1","2"])`.
 
 runWriter是同时计算累加值和结果, 还有execWriter之类的只计算累加值, 丢弃结果.
 
@@ -485,7 +488,309 @@ StateT允许你在结果上套一层上下文, 使用do表达式, 一方面你�
 
 而State的结果没有上下文, do表达式只能共享状态, 结果是不会组合的, 结果值只会取最后一个计算的结果.
 
+## 类型分析
+
+我们先停一下, 研究以下这些monad的类型.
+
+拿StateT来做例子, 我们已经会使用它了, 总之就是声明一个返回`StateT s m a`的值, 其中s是状态值, a是结果值, m是包装类型.
+
+然后你可以写它的表达式, 表达式可以写一句话, 也可以写很多, 总之只要最后返回`StateT s m a`就可以了. 怎么返回? 他提供了lift给你.
+
+特别的是, 写表达式的时候, 我们可以先用do语法糖写出一个代码块, 在这个代码块里可以用put, get之类的函数来操作状态.
+
+这是怎么做到的?
+
+来看一个例子:
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.Cont (lift)
+import Control.Monad.State (StateT, runStateT)
+import Control.Monad.State.Trans (put)
+import Data.Maybe (Maybe(..))
+import Effect (Effect)
+import Effect.Console (log)
+
+val1 :: StateT String Maybe Int
+val1 = do
+  put "nihao"
+  lift $ Just 1
+
+main :: Effect Unit
+main = do
+  log $ show $ runStateT val1 ""
+```
+
+把do写成一般的形式:
+
+```haskell
+val1 :: StateT String Maybe Int
+val1 = bind (put "nihao") (\_ -> lift $ Just 1)
+```
+
+我们知道bind是类型类规定的函数, 在这里:
+
+```haskell
+class Apply m <= Bind m where
+  bind :: forall a b. m a -> (a -> m b) -> m b
+```
+
+就是说对于某个类型m, 要有`bind :: forall a b. m a -> (a -> m b) -> m b`, 对于StateT来说, 实现是:
+
+```haskell
+instance monadStateT :: Monad m => Monad (StateT s m)
+```
+
+就是说, 有`bind :: forall a b. StateT s m a -> (a -> StateT s m b) -> StateT s m b`.
+
+所以`(put "nihao")`应该是`StateT s m a`, `(\_ -> lift $ Just 1)`应该是`(a -> StateT s m b)`, 而最后的返回值应该是`StateT s m b`.
+
+而我们知道最终返回值应该是`StateT String Maybe Int`, 所以我们知道s是String, m是Maybe, b是Int.
+
+所以bind的签名是`forall a. StateT String Maybe a -> (a -> StateT String Maybe Int) -> StateT String Maybe Int`.
+
+那么`(put "nihao")`是`StateT String Maybe a`, `(\_ -> lift $ Just 1)`是`(a -> StateT string Maybe Int)`. 其中a还不确定是什么.
+
+接下来考察put函数, 看看签名(为了不和上面的符号混淆, 我们把符号都改了一下):
+
+```haskell
+put :: forall m1 s1. MonadState s1 m1 => s1 -> m1 Unit
+```
+
+输入一个s1类型的值, 返回一个m1 Unit类型的值.
+
+我们输入的是"nihao", 所以s1就是String了, 我们又知道在我们的情况里`(put "nihao")`是`StateT String Maybe a`. 所以可以推理出以下信息:
+
+- m1是`StateT String Maybe`.
+- MonadState String (StateT String Maybe)应该被实现.
+- a是Unit.
+- bind的签名是`StateT String Maybe Unit -> (Unit -> StateT String Maybe Int) -> StateT String Maybe Int`.
+
+先看看MonadState String (StateT String Maybe)是否真的被实现了:
+
+```haskell
+instance monadStateStateT :: Monad m => MonadState s (StateT s m) where
+  state f = StateT $ pure <<< f
+```
+
+是的, 实现了.
+
+接下来看`(\_ -> lift $ Just 1)`是不是真的是`(Unit -> StateT String Maybe Int)`.
+
+bind的签名保证了这里的`_`肯定是Unit.
+
+所以重点是`lift $ Just 1`是不是`StateT String Maybe Int`, 那么看看lift, 它是一个类型类, 同样, 为了避免混淆, 我们修改了里面的字母:
+
+```haskell
+class MonadTrans t3 where
+  lift :: forall m3 a3. Monad m3 => m3 a3 -> t3 m3 a3
+```
+
+显然, m3应该是Maybe, a3应该是Int, 那么应该会有某种MonadTrans的实现, 可以得到`lift Maybe Int -> StateT String Maybe Int`:
+
+```haskell
+instance monadTransStateT :: MonadTrans (StateT s) where
+  lift m = StateT \s -> do
+    x <- m
+    pure $ Tuple x s
+```
+
+确实有. t3就是(StateT s).
+
+总之, 通过神奇的类型类约束, 确保了我们可以按想象中一样使用put这样的函数.
+
 ## 异常转换器
 
-todo
+这里: [Control.Monad.Except.Trans - purescript-transformers - Pursuit](https://pursuit.purescript.org/packages/purescript-transformers/5.1.0/docs/Control.Monad.Except.Trans#t:ExceptT).
+
+ExceptT是一个类型, 完整写法是`ExceptT e m a`.  和`StateT s m a`很像, e是错误类型, m是包裹类型, a是结果类型.
+
+他在monad里提供了三个函数: catchError, throwError, lift.
+
+看一个例子:
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.Cont (lift)
+import Control.Monad.Except (ExceptT, runExceptT)
+import Control.Monad.Except.Trans (throwError)
+import Data.Maybe (Maybe(..))
+import Effect (Effect)
+import Effect.Console (log)
+
+val1 :: ExceptT String Maybe Int
+val1 = do
+  _ <- throwError "err"
+  lift $ Just 1
+
+main :: Effect Unit
+main = do
+  log $ show $ runExceptT val1 -- 得到(Just (Left "err"))
+```
+
+## 组合
+
+可以玩出更多花样, 看一个例子:
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.Except (ExceptT, lift, runExceptT, throwError)
+import Control.Monad.Writer (WriterT, runWriter, tell)
+import Data.Identity (Identity)
+import Effect (Effect)
+import Effect.Console (log)
+
+writerAndExceptT :: ExceptT String (WriterT (Array String) Identity) Int
+writerAndExceptT = do
+  lift $ tell ["1"]
+  lift $ tell ["2"]
+  _ <- throwError "err"
+  lift $ tell ["3"]
+  pure 1
+
+main :: Effect Unit
+main = do
+  log $ show $ runWriter $ runExceptT writerAndExceptT
+  -- 得到(Tuple (Left "err") ["1","2"])
+```
+
+只要把包装换成写monad, 就可以去操作写monad了, 只需要最后把runExceptT的结果再runWriter一次.
+
+这就相当于你在monad里同时拥有了写monad和异常monad的能力, 既可以tell又可以throwError.
+
+这是怎么做到的?看一个简化的例子:
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.Except (ExceptT, lift, runExceptT)
+import Control.Monad.Writer (WriterT, runWriter, tell)
+import Data.Identity (Identity)
+import Effect (Effect)
+import Effect.Console (log)
+
+writerAndExceptT :: ExceptT String (WriterT (Array String) Identity) Int
+writerAndExceptT = bind (lift $ tell ["1"]) (\_ -> pure 1)
+
+main :: Effect Unit
+main = do
+  log $ show $ runWriter $ runExceptT writerAndExceptT
+  -- 得到(Tuple (Right 1) ["1"])
+```
+
+先把do写成函数调用的形式:
+
+```haskell
+writerAndExceptT :: ExceptT String (WriterT (Array String) Identity) Int
+writerAndExceptT = bind (lift $ tell ["1"]) (\_ -> pure 1)
+```
+
+参考之前的分析, 这里bind的类型应该是:
+
+```haskell
+ExceptT String (WriterT (Array String) Identity) Unit
+  -> (Unit -> ExceptT String (WriterT (Array String) Identity) Int)
+  -> ExceptT String (WriterT (Array String) Identity) Int
+```
+
+首先, 为什么pure 1就可以变成`ExceptT String (WriterT (Array String) Identity) Int`?
+
+因为pure将1提升到了`ExceptT String (WriterT (Array String) Identity)`, 这不难理解.
+
+那为什么tell前要加lift? 看一下tell的定义和WriterT对它的实现:
+
+```haskell
+class (Semigroup w, Monad m) <= MonadTell w m | m -> w where
+  tell :: w -> m Unit
+```
+
+```haskell
+instance monadTellWriterT :: (Monoid w, Monad m) => MonadTell w (WriterT w m) where
+  tell = WriterT <<< pure <<< Tuple unit
+```
+
+在这里`tell ["1"]`的签名是`(Array String) -> (WriterT (Array String) Identity) Unit`.
+
+但bind需要的是`ExceptT String (WriterT (Array String) Identity) Unit`, 而lift刚好可以做这件事.
+
+所以类型对上了, 当然, 实现也如你想的那样, 你可以通过lift操作包在里面的这个WriterT.
+
+当然, 你还可以组合更多monad:
+
+```haskell
+module Main where
+
+import Prelude
+
+import Control.Monad.Except (ExceptT, lift, runExceptT, throwError)
+import Control.Monad.State (StateT, get, runStateT)
+import Control.Monad.Writer (WriterT, runWriterT, tell)
+import Data.Identity (Identity)
+import Effect (Effect)
+import Effect.Console (log)
+
+val1 :: StateT String (WriterT (Array String) (ExceptT (Array String) Identity)) String
+val1 = do
+  s <- get
+  lift $ tell ["The state is " <> s]
+  _ <- lift $ lift $ throwError ["Empty string"]
+  pure "nihao"
+
+main :: Effect Unit
+main = do
+  log $ show $ runExceptT $ runWriterT $ runStateT val1 "test"
+  -- 得到(Identity (Left ["Empty string"]))
+```
+
+你同时拥有了StateT, WriterT和ExceptT. 只是这样写比较繁琐.
+
+幸运的是, 这些类型里互相实现了各自的函数, 比如, 对于刚才的:
+
+```haskell
+writerAndExceptT :: ExceptT String (WriterT (Array String) Identity) Int
+writerAndExceptT = bind (lift $ tell ["1"]) (\_ -> pure 1)
+```
+
+把lift去掉也能用:
+
+```haskell
+writerAndExceptT :: ExceptT String (WriterT (Array String) Identity) Int
+writerAndExceptT = bind (tell ["1"]) (\_ -> pure 1)
+```
+
+为什么?答案是, 在ExceptT类型里也实现了tell:
+
+```haskell
+instance monadTellExceptT :: MonadTell w m => MonadTell w (ExceptT e m) where
+  tell = lift <<< tell
+```
+
+## RWS
+
+这里: [Control.Monad.RWS - purescript-transformers - Pursuit](https://pursuit.purescript.org/packages/purescript-transformers/5.1.0/docs/Control.Monad.RWS#t:RWS).
+
+依据上面的原理, 封装出了一个RWS单子, 当然他还有对应的转换器形式RWST.
+
+顾名思义, 就是在这个单子里你可以自由的使用读,写,状态monad的那些函数.
+
+它的形式是`RWST r w s m a`.
+
+r是读monad的环境类型, w是写monad的类型, s是状态monad的类型, m是包装类型, a是结果类型.
+
+而RWS也和之前一样, 将RWST的m设置为Identity:
+
+```haskell
+type RWS r w s = RWST r w s Identity
+```
 
